@@ -1,0 +1,17 @@
+TY  - JOUR
+AU  - Cortes, Corinna
+AU  - Vapnik, Vladimir
+PY  - 1995
+DA  - 1995/09/01
+TI  - Support-vector networks
+JO  - Machine Learning
+SP  - 273
+EP  - 297
+VL  - 20
+IS  - 3
+AB  - Thesupport-vector network is a new learning machine for two-group classification problems. The machine conceptually implements the following idea: input vectors are non-linearly mapped to a very high-dimension feature space. In this feature space a linear decision surface is constructed. Special properties of the decision surface ensures high generalization ability of the learning machine. The idea behind the support-vector network was previously implemented for the restricted case where the training data can be separated without errors. We here extend this result to non-separable training data.
+SN  - 1573-0565
+UR  - https://doi.org/10.1007/BF00994018
+DO  - 10.1007/BF00994018
+ID  - Cortes1995
+ER  - 

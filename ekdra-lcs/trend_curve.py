@@ -50,11 +50,11 @@ def flare_spot(dt_flux, sigma):
     len_flare = 0
     df = [dt_flux[i + 1] - dt_flux[i] for i in range(len(dt_flux)-1)]
 
-    # Tag the points where we spot the flare getting over 2 sigma;
+    # Tag the points where we spot the flare getting over 4 sigma;
     # two consecutive points will suffice:
 
     for i in range(len(dt_flux)):
-        if dt_flux[i] > 3.0 * sigma:
+        if dt_flux[i] > 4.0 * sigma:
             len_flare += 1
         elif len_flare > 1 and dt_flux[i] > 1.0 * sigma:
             len_flare += 1

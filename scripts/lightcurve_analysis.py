@@ -1,93 +1,156 @@
-import numpy as np
 from astropy.io import fits
-import matplotlib.pyplot as plt
 import argparse as ap
-import pandas as pd
-import flaredetect_io as io
-import flaredetect_tools as tools
-
-class Flare_cand:
-    def __init__(self,confidence,t_start,t_end,energy,significance):
-        self.conf = confidence # number 1-n_voters
-        self.i_start = t_start # index decided by first detection
-        self.i_end = t_end # index decided by first detection
-        self.energy = energy # an array of votes
-        self.sig = significance # sigmas of peak
+import numpy as np
+from sklearn import svm
+from scipy import integrate
+from scipy.interpolate import interp1d
+import matplotlib.pyplot as plt
+from copy import *
 
 
-def main():
+def detrended_curve(time, flux):
+
+    """    
+    Fits a support vector machine to the curve (time, flux defined)
+    with radial kernel functions; returns the trended curve.
+    requires the line "from sklearn import svm"
+    """
     
-    args = io.get_args()
-    
-    hdul = fits.open(args.inputfile)
-    lcdata = hdul[1].data
-    pdcflux_raw = lcdata.field(7)
-    time_raw = lcdata.field(0)
-    
-    PERIOD = args.p
-    SENS = args.sens
-    MIN_LEN = args.minlen
-    WINDOWPERIOD = 0.4
-    WINDOW_OVERLAP = 7
-    
-    cadence = len(time_raw)/(time_raw[len(time_raw)-1] - time_raw[0])
-    windowsize = int(WINDOWPERIOD*PERIOD*cadence)
-    windowstep = int(windowsize/WINDOW_OVERLAP)
-    
-    # Initialize data structure for flare positions, confidence (1-7)
-    # and find sigmas
-    # -> has to be extendable with energy estimates
-    # pandas?
-    
-    flaredata = [] # AN ARRAY OF FLARE_CAND OBJECTS
-    
-    # Loop proper:
-    
-    for i in range(0,len(time_raw)-windowsize,windowstep):
+    if len(time) == 0:
+        return []
+
+    meant = np.mean(time)
+    stdt = np.std(time)
+    meanf = np.mean(flux)
+    stdf = np.std(flux)
+
+    wt = [[(t - meant) / stdt] for t in time]  # normalization for optimal SVM
+    clf = svm.SVR(kernel="rbf", gamma="auto")
+    try:
+        clf.fit(wt, (flux - meanf) / stdf)
+    except ValueError:
+        return []
         
-        # Remove NaNs, skip window if there are too many
-    
-        windowflux_raw = pdcflux_raw[i:i+windowsize]
-        windowtime_raw = time_raw[i:i+windowsize]
+    flux_pred = clf.predict(wt)
+
+    return flux_pred * stdf + meanf
+
+
+def flare_cand_spot(dt_flux, sigma):
+
+    """
+	Returns the indices of the flare candidates within a window.
+	Ignores nans.
+	Goes through jumps, and tags them if they appear significant.
+	"""
+
+    flare_times = np.zeros(len(dt_flux))
+    len_flare = 0
+    df = [dt_flux[i + 1] - dt_flux[i] for i in range(len(dt_flux) - 1)]
+
+    # Tag the points where we spot the flare getting over 2 sigma;
+    # two consecutive points will suffice:
+
+    for i in range(len(dt_flux)):
+        if dt_flux[i] > 2.5 * sigma:
+            len_flare += 1
+        elif len_flare > 1 and dt_flux[i] > 1.5 * sigma:
+            len_flare += 1
+        elif len_flare > 1:
+            flare_times[i - len_flare : i] = 1.0
+            len_flare = 0
+        else:
+            len_flare = 0
+
+    return flare_times
+
+
+def trend_lightcurve(time_raw, pdcflux_raw, windowsize, windowstep):
+
+    """
+    the trend of the lightcurve - up to 7 overlapping windows fit the curve with
+    svm, take the median of them
+    includes NaNs!
+    """
+
+    flux_raw = deepcopy(pdcflux_raw)
+
+    n_votes = np.zeros(len(time_raw))
+    lightcurve_trended = np.zeros(len(time_raw))
+    flare_points = np.zeros(len(time_raw))
+
+    for i in range(0, len(time_raw), windowstep):
+        iend = min(len(time_raw), i + windowsize)
+        windowflux_raw = deepcopy(flux_raw[i:iend])
+        windowtime_raw = time_raw[i:iend]
         has_errs = np.isnan(windowflux_raw)
         flux = windowflux_raw[~has_errs]
         time = windowtime_raw[~has_errs]
+        flux_trend = detrended_curve(time, flux)
+        if (len(flux_trend) == 0): continue
         
-        if float(len(flux))/float(len(windowflux_raw)) < 0.3:
-            continue
+        windowflux_raw[~has_errs] = flux_trend
+        lightcurve_trended[i : i + windowsize] += windowflux_raw
+        n_votes[i : i + windowsize] += 1
     
-        # Find flares,  analyze energy estimates
+    lightcurve_trended[lightcurve_trended == 0] = np.nan
+    lightcurve_trended[n_votes != 0] /= n_votes[n_votes != 0]
+    lightcurve_detrended = pdcflux_raw - lightcurve_trended
+    errs = np.isnan(lightcurve_detrended)
+    sigma = np.std(lightcurve_detrended[~errs])
+
+    for i in range(0, len(time_raw) - windowsize, windowstep):
         
-        flux_detrend = tools.detrended_curve(time,flux)
-        flare_pos = find_flare_indices(flux_detrend, 
-                        MIN_LEN, SENS*np.std(flux_detrend), i)
-        energies = []
-        for j in range(len(flare_pos)):
-            energies.append(find_flare_energy(time,flux,flare_pos[j])) # TODO
-        
-        # Consolidate overlapping flares, vote on detection and energy
-        
-        for j in range(len(flare_pos)):
-            ol = tools.flare_overlap(flare_pos[j],flaredata):
-            if (ol != -1):
-                flaredata[ol].conf += 1
-                flaredata[ol].energy.append(energies[j])
-                continue
-            else
-                flaredata.append(Flare_cand(1,
-                                    flare_pos[j][0],
-                                    flare_pos[j][-1],
-                                    energies[j],
-                                    0))
-            
-            
-            
-    
-    # Write outputs, create plots if demanded
-    
-    io.write_flares(args.o,flaredata) #TODO
+        flare_points[i : i + windowsize] = flare_cand_spot(
+            lightcurve_detrended[i : i + windowsize], sigma
+        )
+
+    return lightcurve_trended, flare_points, sigma
 
 
-if __name__ == "__main__":
-    main()
+def lcplot(t, f, color=""):
+    """
+    Simple lightcurve plot function
+    """
+    plt.plot(t, f, color + ".", alpha=0.1)
+    plt.xlabel("Timestamp (days)")
+    plt.ylabel(r"SAP flux ($e^-/s$)")
 
+
+parser = ap.ArgumentParser(description="Trend a lightcurve from a TESS FITS file")
+parser.add_argument("inputfile", metavar="if", type=str, help="Input file")
+parser.add_argument("period", type=float, help="Period of the star")
+parser.add_argument("--plot", help="Plot the lightcurve", action="store_true")
+parser.add_argument("--of", type=str, help="Output file for data")
+
+args = parser.parse_args()
+
+hdul = fits.open(args.inputfile)
+lcdata = hdul[1].data
+pdcflux_raw = lcdata.field(7)
+time_raw = lcdata.field(0)
+hdul.close()
+
+PERIOD = args.period
+WINDOWPERIOD = 0.4
+WINDOW_OVERLAP = 9.0
+
+cadence = len(time_raw) / (time_raw[len(time_raw) - 1] - time_raw[0])
+
+windowsize = int(WINDOWPERIOD * PERIOD * cadence)
+windowstep = int(windowsize / WINDOW_OVERLAP)
+
+lc_trend, flares, sigma = trend_lightcurve(
+    time_raw, pdcflux_raw, windowsize, windowstep
+)
+
+for i in range(len(time_raw)):
+    print("{} {} {} {}".format(time_raw[i], pdcflux_raw[i], lc_trend[i], flares[i]))
+
+if args.plot:
+    plotname = args.inputfile[:-4] + "png"
+    lcplot(time_raw, pdcflux_raw)
+    plt.plot(time_raw[flares == 1.0], pdcflux_raw[flares == 1.0], ".", alpha=0.5)
+    plt.plot(time_raw, lc_trend, "r--")
+    plt.show()
+    plt.savefig(plotname)
